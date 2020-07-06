@@ -1,0 +1,271 @@
+---
+title: "Integration of scATAC-seq with scopen as input"
+author: "Mingbo"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`' 
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T)
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(cluster)
+library(clustree)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+```
+
+## Load data
+```{r loaddata, echo=FALSE}
+# peak-barcode count matrix
+input_location <- "../../scOpen/"
+#metadata_location <- "../../CellFiltering"
+metadata_location <- "../../1Round_Peakcalling/data"
+
+filename <- paste0(input_location, "Heart_barcodes.txt")
+
+counts <- read.table(filename, header = TRUE, sep = "\t",  check.names = FALSE, row.names = 1)
+metadata <- read.csv(file = paste0(metadata_location, "/", "singlecell.csv"),
+                     header = TRUE, row.names = 1)
+fragment.path <- paste0(metadata_location, "/", "fragments_ordered.tsv.bgz")
+
+num_features <- nrow(counts)
+
+# convert some features to log scale
+metadata$TSS_fragments_log <- log10(metadata$TSS_fragments + 1)
+metadata$DNase_sensitive_region_fragments_log <- log10(metadata$DNase_sensitive_region_fragments + 1)
+metadata$enhancer_region_fragments_log <- log10(metadata$enhancer_region_fragments + 1)
+metadata$promoter_region_fragments_log <- log10(metadata$promoter_region_fragments + 1)
+metadata$on_target_fragments_log <- log10(metadata$on_target_fragments + 1)
+metadata$blacklist_region_fragments_log <- log10(metadata$blacklist_region_fragments + 1)
+metadata$peak_region_fragments_log <- log10(metadata$peak_region_fragments + 1)
+metadata$peak_region_cutsites_log <- log10(metadata$peak_region_cutsites + 1)
+metadata$passed_filters_log <- log10(metadata$passed_filters + 1)
+metadata$duplicate_log <- log10(metadata$duplicate + 1)
+metadata$pct_reads_in_peaks <- metadata$peak_region_fragments / metadata$passed_filters
+metadata$pct_reads_in_promoters <- metadata$promoter_region_fragments / metadata$passed_filters
+
+obj <- CreateSeuratObject(counts = counts, assay = 'peaks',
+                          project = 'ATAC', min.cells = 1,
+                          names.field = 2, names.delim = "-",
+                          meta.data = metadata)
+
+obj$sample.ident <- Idents(obj)
+
+obj <- RenameIdents(object=obj,
+                    '1' = 'Sham', 
+                    '2' = 'Day3',
+                    '3' = 'Day3',
+                    '4' = 'Day10',
+                    '5' = 'Day10',
+                    '6' = 'Sham')
+obj$time.ident <- Idents(obj)
+
+Idents(obj) <- "sample.ident"
+
+obj <- RenameIdents(object = obj, 
+                    '1' = 'Female', 
+                    '2' = 'Female',
+                    '3' = 'Male',
+                    '4' = 'Female',
+                    '5' = 'Male',
+                    '6' = 'Male')
+
+obj$gender.ident <- Idents(obj)
+
+obj <- SetFragments(object = obj, file = fragment.path)
+cols.samples <- c("Sham" = "#1b9e77",
+                  "Day3" = "#d95f02",
+                  "Day10" = "#7570b3")
+
+cols.gender <- c("Female" = "#a6cee3",
+                 "Male" = "#1f78b4")
+```
+
+
+
+## Dimensionality reduction 
+```{r visualization, echo=FALSE, warning=-1, fig.height=6, fig.width=14}
+obj[["pca"]] <- CreateDimReducObject(embeddings = t(as.matrix(obj@assays$peaks@counts)),
+                                   key = "PC_",
+                                   assay = DefaultAssay(obj))
+
+obj <- RunUMAP(obj, 
+               verbose = FALSE, 
+               reduction = "pca", 
+               reduction.name = "umap_pca", 
+               dims = 1:num_features,
+               min.dist = 0.1)
+
+p1 <- DimPlot(obj, reduction = "umap_pca", 
+              pt.size = 0.1, group.by = "time.ident")
+
+p2 <- DimPlot(obj, reduction = "umap_pca", 
+              pt.size = 0.1, group.by = "gender.ident")
+
+p1 + p2
+```
+
+
+## We now check the distribution of each feature again based on UAMP + PCA
+```{r umap_pca, echo=FALSE, fig.height=6, fig.width=12}
+p1 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "TSS_fragments_log", pt.size = 0.1)
+p2 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "DNase_sensitive_region_fragments_log", pt.size = 0.1)
+p3 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "enhancer_region_fragments_log", pt.size = 0.1)
+p4 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "promoter_region_fragments_log", pt.size = 0.1)
+p5 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "on_target_fragments_log", pt.size = 0.1)
+p6 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "blacklist_region_fragments_log", pt.size = 0.1)
+p7 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "peak_region_fragments_log", pt.size = 0.1)
+p8 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "peak_region_cutsites_log", pt.size = 0.1)
+p9 <- FeaturePlot(obj, reduction = "umap_pca", 
+                  features = "passed_filters_log", pt.size = 0.1)
+p10 <- FeaturePlot(obj, reduction = "umap_pca", 
+                   features = "duplicate_log", pt.size = 0.1)
+p11 <- FeaturePlot(obj, reduction = "umap_pca", 
+                   features = "pct_reads_in_peaks", pt.size = 0.1)
+p12 <- FeaturePlot(obj, reduction = "umap_pca", 
+                   features = "pct_reads_in_promoters", pt.size = 0.1)
+
+CombinePlots(plots = list(p1, p2), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p3, p4), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p5, p6), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p7, p8), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p9, p10), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p11, p12), ncol = 2, legend = 'none')
+```
+
+
+## Integrate the data to remove the batch effect
+```{r integrate, echo=FALSE, fig.height=6, fig.width=14}
+Idents(obj) <- "sample.ident"
+obj.list <- SplitObject(obj)
+obj.anchors <- FindIntegrationAnchors(object.list = obj.list, verbose = TRUE,
+                                      anchor.features = rownames(obj))
+
+obj.integrated <- IntegrateData(anchorset = obj.anchors, 
+                                verbose = TRUE, 
+                                dims = 1:num_features-1)
+
+# switch to integrated assay. The variable features of this assay are
+# automatically set during IntegrateData
+DefaultAssay(obj.integrated) <- "integrated"
+
+# Run the standard workflow for dimensionality reduction and visualization 
+# Here we cannot use LSI because the integrated data is not integre number anymore and constrction of a TF-IDF matrix is not possible
+obj.integrated[["pca_integrated"]] <- CreateDimReducObject(embeddings = t(as.matrix(obj.integrated@assays$integrated@data)),
+                                   key = "PC_",
+                                   assay = DefaultAssay(obj.integrated))
+
+obj.integrated <- RunUMAP(obj.integrated, verbose = FALSE, 
+                          reduction = "pca_integrated",
+                          reduction.name = "umap_pca_integrated",
+                          dims = 1:30,
+                          min.dist = 0.1)
+
+p1 <- DimPlot(obj.integrated, reduction = "umap_pca_integrated", 
+              pt.size = 0.1, group.by = "time.ident") 
+
+p2 <- DimPlot(obj.integrated, reduction = "umap_pca_integrated", 
+              pt.size = 0.1, group.by = "gender.ident") 
+
+p1 + p2
+```
+
+
+## We now check the distribution of each feature again based on UAMP + PCA
+```{r umap_pca_integrated, echo=FALSE, fig.height=6, fig.width=12}
+p1 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "TSS_fragments_log", pt.size = 0.1)
+p2 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "DNase_sensitive_region_fragments_log", pt.size = 0.1)
+p3 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "enhancer_region_fragments_log", pt.size = 0.1)
+p4 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "promoter_region_fragments_log", pt.size = 0.1)
+p5 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "on_target_fragments_log", pt.size = 0.1)
+p6 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "blacklist_region_fragments_log", pt.size = 0.1)
+p7 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "peak_region_fragments_log", pt.size = 0.1)
+p8 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "peak_region_cutsites_log", pt.size = 0.1)
+p9 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                  features = "passed_filters_log", pt.size = 0.1)
+p10 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                   features = "duplicate_log", pt.size = 0.1)
+p11 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                   features = "pct_reads_in_peaks", pt.size = 0.1)
+p12 <- FeaturePlot(obj.integrated, reduction = "umap_pca_integrated", 
+                   features = "pct_reads_in_promoters", pt.size = 0.1)
+
+CombinePlots(plots = list(p1, p2), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p3, p4), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p5, p6), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p7, p8), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p9, p10), ncol = 2, legend = 'none')
+CombinePlots(plots = list(p11, p12), ncol = 2, legend = 'none')
+```
+
+## Clustering with SNN
+```{r clustering, echo=TRUE, fig.height=8, fig.width=8}
+DefaultAssay(obj.integrated) <- "integrated"
+obj.integrated[["sample.ident"]] <- Idents(object = obj.integrated)
+
+obj.integrated <- FindNeighbors(object = obj.integrated, 
+                                reduction = "umap_pca_integrated", dims=1:2)
+obj.integrated <- FindClusters(object = obj.integrated, verbose=F,
+                               resolution = c(0.05, 0.07, 0.09, 0.1, 0.2, 0.3))
+
+p1 <- DimPlot(obj.integrated, reduction = "umap_pca_integrated",
+              group.by = "integrated_snn_res.0.1",
+              label = TRUE, pt.size = 0.1, 
+              label.size = 4)
+
+print(p1)
+obj.integrated$seurat_clusters <- obj.integrated$integrated_snn_res.0.1
+clustree(obj.integrated)
+
+```
+
+
+## Add gene activity and expression data
+```{r add, echo=FALSE}
+gene.activity <- readRDS("../GeneActivity/GeneActivity.Rds")
+obj.integrated[["gene.activity"]] <- CreateAssayObject(counts = gene.activity)
+DefaultAssay(obj.integrated) <- "gene.activity"
+obj.integrated <- NormalizeData(obj.integrated)
+obj.integrated <- FindVariableFeatures(obj.integrated)
+obj.integrated <- ScaleData(obj.integrated)
+```
+
+
+
+
+## Save data
+```{r save}
+saveRDS(obj, file = "obj.Rds")
+saveRDS(obj.integrated, file = "obj.integrated.Rds")
+df <- obj.integrated@meta.data
+write.csv(df, file ="obj.integrated.csv", quote = FALSE)
+```
