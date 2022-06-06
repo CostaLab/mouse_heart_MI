@@ -1,0 +1,82 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T,cache=F)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads =100)
+addArchRGenome("mm10")
+
+
+cols.celltypes <- c(
+    'Fibroblasts' = '#f032e6',
+    'Myofibroblasts' = '#911eb4',
+    'Pericytes/vSMC' = '#e6beff')
+
+```
+
+### Reading data
+```{r}
+proj <- loadArchRProject(path = "./Fib", showLogo = FALSE)
+```
+
+
+### add trajectory
+```{r}
+
+proj <- addTrajectory(
+    ArchRProj = proj,
+    name = "palantir_Pericytes_vSMC1",
+    groupBy = "Clusters_Harmony",
+    trajectory = c("C3", "C4", "C1", "C7"),
+    reducedDims = "palantir",
+    embedding = "palantir",
+    force = TRUE
+)
+```
+
+
+
+### plot trajectory
+```{r}
+
+
+p1 <- plotTrajectory(proj,
+                    trajectory = "palantir_Pericytes_vSMC1",
+                    colorBy = "cellColData",
+                    name = "palantir_Pericytes_vSMC1",
+                    embedding = "palantir",
+                    size = 0.5,
+                    quantCut = c(0.01, 0.95),
+                    legendSize=20,
+                    title = "Pericytes_vSMC11")
+
+print(p1)
+```
+
+
+
+

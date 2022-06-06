@@ -1,0 +1,379 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T,cache=F)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+library(reticulate)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads =100)
+addArchRGenome("mm10")
+
+
+cols.celltypes <- c(
+    'Macrophages' = '#f032e6',
+    'Anti-inflammatory macrophages' = '#911eb4',
+    'inflammatory macrophages' = '#e6beff')
+
+```
+
+### Reading data
+```{r}
+proj <- loadArchRProject(path = "./macro", showLogo = FALSE)
+proj <- addImputeWeights(proj)
+```{r}
+
+### check cell fraction
+```{r}
+df <- as.data.frame(proj@cellColData)
+
+df.plot <- df %>% group_by(Clusters_Harmony, time.ident) %>%
+    summarise(num_cells = n()) %>%
+    mutate(fraction = num_cells / sum(num_cells))
+    
+
+p <- ggplot(data = df.plot, 
+            aes(x = Clusters_Harmony, y = fraction)) +
+    geom_bar(aes(fill = time.ident), stat = "identity") +
+    scale_fill_brewer(palette = "Set1")
+
+print(p)
+```
+
+
+```{python}
+#import pickle 
+#f = open("../../palantir/save/Palantir_macro.pickle", "rb")
+#obj_dict = pickle.load(f)
+#obj_dict["fdl"].to_csv("macro_palantir_fdl.csv") 
+```
+
+## add diffusion map
+```{r add_diffusion_map}
+library(destiny)
+
+dm <- DiffusionMap(proj@embeddings$UMAP_Harmony$df,
+                   verbose = TRUE)
+
+embedding <- as.data.frame(dm)[, c("DC1", "DC2")]
+
+colnames(embedding) <- c("Harmony#DC_Dimension_1",
+                         "Harmony#DC_Dimension_2")
+
+proj@embeddings[["dm"]] <- SimpleList(df = embedding,
+                                      params = NULL)
+
+p <- plotEmbedding(ArchRProj = proj,
+                   embedding = "dm",
+                   colorBy = "cellColData",
+                   name = "Clusters_Harmony")
+
+print(p)
+```
+
+
+### add diffusion map
+```{r}
+palantir <- read.csv("macro_palantir_fdl.csv", row.names = 1,stringsAsFactors = F)
+
+colnames(x = palantir) <- c("Harmony#palantir_Dimension_1",
+                            "Harmony#palantir_Dimension_2")
+
+splited_str <- str_split(rownames(proj@cellColData), "#")
+idx <- sapply(1:length(splited_str), function(i) splited_str[[i]][2])
+
+palantir <- palantir <- palantir[idx, ]
+rownames(palantir) <- rownames(proj@cellColData)
+proj@embeddings[["palantir"]] <- SimpleList(df = palantir,
+                                      params = NULL)
+p <- plotEmbedding(ArchRProj = proj,
+                   embedding = "dm",
+                   size=0.05,
+                   colorBy = "cellColData",
+                   name = "celltype")# + theme(legend.text=element_text(size=20))
+print(p)
+p <- plotEmbedding(ArchRProj = proj,
+                   embedding = "dm",
+                   size=0.05,
+                   colorBy = "cellColData",
+                   name = "Clusters_Harmony")# + theme(legend.text=element_text(size=20))
+print(p)
+```
+
+
+
+### add motif matrix
+```{r}
+proj <- addMotifAnnotations(ArchRProj = proj, 
+                            motifSet = "cisbp", 
+                            name = "Motif",
+                            force = TRUE)
+
+proj <- addDeviationsMatrix(
+  ArchRProj = proj, 
+  peakAnnotation = "Motif",
+  force = TRUE,
+  binarize = TRUE,
+  matrixName = "MotifMatrix")
+
+```
+
+
+### visualize marker genes
+```{r}
+macro_genes <- c("Ms4a6c", "Gngt2", "Lgals3", "Adgre1", "F13a1", "Il1rl1", "Gata3", "Folr2", "Mrc1", "Cbr2", "Pf4",  "C1qa", "Cd14", "Cebpa") 
+p <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = macro_genes, 
+    embedding = "dm",
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+
+for (nm in names(p)){
+    print(p[[nm]])
+}
+
+```
+
+
+### add trajectory
+```{r}
+
+proj <- addTrajectory(
+    ArchRProj = proj,
+    name = "dm_M2_Anti_inflammatory_macrophages",
+    groupBy = "Clusters_Harmony",
+    trajectory = c("C2", "C4", "C6"),
+    reducedDims = "dm",
+    embedding = "dm",
+    force = TRUE
+)
+
+proj <- addTrajectory(
+    ArchRProj = proj,
+    name = "dm_M1_inflammatory_macrophages",
+    groupBy = "Clusters_Harmony",
+    trajectory = c("C2", "C3", "C1"),
+    reducedDims = "dm",
+    embedding = "dm",
+    force = TRUE
+)
+```
+
+
+### plot trajectory
+```{r plot_trajectory, fig.width=8, fig.height=4}
+
+
+p1 <- plotTrajectory(proj,
+                    trajectory = "dm_M2_Anti_inflammatory_macrophages",
+                    colorBy = "cellColData",
+                    name = "dm_M2_Anti_inflammatory_macrophages",
+                    embedding = "dm",
+                    size = 0.5,
+                    quantCut = c(0.01, 0.95),
+                    legendSize=20,
+                    title = "Pericytes_vSMC")
+p2 <- plotTrajectory(proj,
+                    trajectory = "dm_M1_inflammatory_macrophages",
+                    colorBy = "cellColData",
+                    name = "dm_M1_inflammatory_macrophages",
+                    embedding = "dm",
+                    size = 0.5,
+                    quantCut = c(0.01, 0.95),
+                    title = "Fibroblasts")
+
+ggAlignPlots(p1[[1]], 
+             p2[[1]],
+             type="h")
+
+```
+
+### visualize genes along trajectory
+
+```{r viz_genes_trajectory, fig.height=4, fig.width=8}
+
+macro_genes <- c("Ms4a6c", "Gngt2", "Lgals3", "Adgre1", "F13a1", "Il1rl1", "Gata3", "Folr2", "Mrc1", "Cbr2", "Pf4", "C1qa", "Cd14", "Cebpa") 
+for (gene in macro_genes) {
+    p1 <- plotTrajectory(proj, 
+                    trajectory = "dm_M1_inflammatory_macrophages", 
+                    colorBy = "GeneScoreMatrix", 
+                    name = gene, 
+                    continuousSet = "blueYellow",
+                    embedding = "dm",
+                    title = "dm_M1_inflammatory_macrophages")
+    
+    p2 <- plotTrajectory(proj, 
+                    trajectory = "dm_M2_Anti_inflammatory_macrophages", 
+                    colorBy = "GeneScoreMatrix", 
+                    name = gene, 
+                    continuousSet = "blueYellow",
+                    embedding = "dm",
+                    title = "dm_M2_Anti_inflammatory_macrophages")
+
+    ggAlignPlots(p1[[2]] , p2[[2]], type = "h")
+}
+```
+
+
+### heatmap showing all marker genes
+
+```{r plot_gene_heatmap, fig.height=12, fig.width=6}
+trajGSM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "dm_M1_inflammatory_macrophages", 
+                         useMatrix = "GeneScoreMatrix", 
+                         log2Norm = TRUE)
+
+trajGSM2 <- getTrajectory(ArchRProj = proj, 
+                         name = "dm_M2_Anti_inflammatory_macrophages", 
+                         useMatrix = "GeneScoreMatrix", 
+                         log2Norm = TRUE)
+
+p1 <- plotTrajectoryHeatmap(trajGSM1,  
+                           pal = paletteContinuous(set = "horizonExtra"),
+                           labelTop = 100)
+
+p2 <- plotTrajectoryHeatmap(trajGSM2,  
+                           pal = paletteContinuous(set = "horizonExtra"),
+                           labelTop = 100)
+
+
+p1
+p2
+```
+
+### heatmap showing motif accessibility
+```{r plot_motif_heatmap, fig.height=12, fig.width=6}
+
+trajMM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "dm_M1_inflammatory_macrophages", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+trajMM2 <- getTrajectory(ArchRProj = proj, 
+                         name = "dm_M2_Anti_inflammatory_macrophages", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+p1 <- plotTrajectoryHeatmap(trajMM1,  
+                           pal = paletteContinuous(set = "solarExtra"),
+                           labelRows = TRUE,
+                           labelTop = 100,
+                           varCutOff = 0.8,
+                           limits = c(-2, 2))
+
+p2 <- plotTrajectoryHeatmap(trajMM2,  
+                           pal = paletteContinuous(set = "solarExtra"),
+                           labelRows = TRUE,
+                           labelTop = 100,
+                           varCutOff = 0.8,
+                           limits = c(-2, 2))
+
+p1
+p2
+```
+
+### Integrative pseudo-time analyses
+
+```{r integrative_1, fig.height=8, fig.width=8}
+corGSM_MM1 <- correlateTrajectories(trajGSM1, 
+                                    trajMM1,
+                                    corCutOff = 0.0,
+                                    varCutOff1 = 0.8,
+                                    varCutOff2 = 0.8)
+
+corGSM_MM1[[1]]
+corGSM_MM1[[1]] <- subset(corGSM_MM1[[1]], FDR < 0.05)
+
+trajGSM1 <- trajGSM1[corGSM_MM1[[1]]$name1, ]
+trajMM1 <- trajMM1[corGSM_MM1[[1]]$name2, ]
+
+trajCombined <- trajGSM1
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM1), 1, scale)) + t(apply(assay(trajMM1), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined, 
+                                     returnMat = TRUE, 
+                                     varCutOff = 0)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM1))
+
+ht1 <- plotTrajectoryHeatmap(trajGSM1,  
+                             pal = paletteContinuous(set = "horizonExtra"),  
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht2 <- plotTrajectoryHeatmap(trajMM1, 
+                             pal = paletteContinuous(set = "solarExtra"), 
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht1 + ht2
+corGSM_MM2 <- correlateTrajectories(trajGSM2, 
+                                    trajMM2,
+                                    corCutOff = 0.0)
+
+corGSM_MM2[[1]]
+corGSM_MM2[[1]] <- subset(corGSM_MM2[[1]], FDR < 0.05)
+
+trajGSM2 <- trajGSM2[corGSM_MM2[[1]]$name1, ]
+trajMM2 <- trajMM2[corGSM_MM2[[1]]$name2, ]
+
+trajCombined <- trajGSM2
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM2), 1, scale)) + t(apply(assay(trajMM2), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined, 
+                                     returnMat = TRUE, 
+                                     varCutOff = 0)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM2))
+
+ht1 <- plotTrajectoryHeatmap(trajGSM2,  
+                             pal = paletteContinuous(set = "horizonExtra"),  
+                             varCutOff = 0, rowOrder = rowOrder)
+
+ht2 <- plotTrajectoryHeatmap(trajMM2, 
+                             pal = paletteContinuous(set = "solarExtra"), 
+                             varCutOff = 0, rowOrder = rowOrder)
+
+ht1 + ht2
+```
+
+
+
+### save
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+### session Info
+```{r}
+sessionInfo()
+```
+

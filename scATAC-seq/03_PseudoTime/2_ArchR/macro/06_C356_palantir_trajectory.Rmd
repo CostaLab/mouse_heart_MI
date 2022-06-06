@@ -1,0 +1,181 @@
+---
+title: "Analyze data using ArchR"
+author: "Zhijian Li"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T,cache=F)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+library(reticulate)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads =100)
+addArchRGenome("mm10")
+
+
+cols.celltypes <- c(
+    'Macrophages' = '#f032e6',
+    'Anti-inflammatory macrophages' = '#911eb4',
+    'inflammatory macrophages' = '#e6beff')
+
+```
+
+### Reading data
+```{r}
+proj <- loadArchRProject(path = "./macro", showLogo = FALSE)
+proj <- addImputeWeights(proj)
+```{r}
+
+
+### add trajectory
+```{r}
+
+proj <- addTrajectory(
+    ArchRProj = proj,
+    name = "palantir_C356_M1toM2",
+    groupBy = "Clusters_Harmony",
+    trajectory = c("C1", "C5", "C6"),
+    reducedDims = "palantir",
+    embedding = "palantir",
+    force = TRUE
+)
+```
+
+
+### plot trajectory
+```{r plot_trajectory, fig.width=4, fig.height=4}
+plotTrajectory(proj,
+                    trajectory = "palantir_C356_M1toM2",
+                    colorBy = "cellColData",
+                    name = "palantir_C356_M1toM2",
+                    embedding = "palantir",
+                    size = 0.5,
+                    quantCut = c(0.01, 0.95),
+                    legendSize=20,
+                    title = "C356_M1toM2")
+
+```
+
+### visualize genes along trajectory
+
+```{r viz_genes_trajectory, fig.height=4, fig.width=8}
+
+macro_genes <- c("Ms4a6c", "Gngt2", "Lgals3", "Adgre1", "F13a1", "Il1rl1", "Gata3", "Folr2", "Mrc1", "Cbr2", "Pf4", "C1qa", "Cd14", "Cebpa") 
+for (gene in macro_genes) {
+    p1 <- plotTrajectory(proj, 
+                    trajectory = "palantir_C356_M1toM2", 
+                    colorBy = "GeneScoreMatrix", 
+                    name = gene, 
+                    continuousSet = "blueYellow",
+                    embedding = "palantir",
+                    title = "palantir_C356_M1toM2")
+   print(p1) 
+}
+```
+
+
+### heatmap showing all marker genes
+
+```{r plot_gene_heatmap, fig.height=12, fig.width=6}
+
+trajGSM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_C356_M1toM2", 
+                         useMatrix = "GeneScoreMatrix", 
+                         log2Norm = TRUE)
+
+p1 <- plotTrajectoryHeatmap(trajGSM1,  
+                           pal = paletteContinuous(set = "horizonExtra"),
+                           labelTop = 100)
+
+p1
+```
+
+### heatmap showing motif accessibility
+```{r plot_motif_heatmap, fig.height=12, fig.width=6}
+
+trajMM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_C356_M1toM2", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+p1 <- plotTrajectoryHeatmap(trajMM1,  
+                           pal = paletteContinuous(set = "solarExtra"),
+                           labelRows = TRUE,
+                           labelTop = 100,
+                           varCutOff = 0.8,
+                           limits = c(-2, 2))
+
+p1
+```
+
+### Integrative pseudo-time analyses
+
+```{r integrative_1, fig.height=8, fig.width=8}
+corGSM_MM1 <- correlateTrajectories(trajGSM1, 
+                                    trajMM1,
+                                    corCutOff = 0.0,
+                                    varCutOff1 = 0.8,
+                                    varCutOff2 = 0.8)
+
+corGSM_MM1[[1]]
+corGSM_MM1[[1]] <- subset(corGSM_MM1[[1]], FDR < 0.05)
+
+trajGSM1 <- trajGSM1[corGSM_MM1[[1]]$name1, ]
+trajMM1 <- trajMM1[corGSM_MM1[[1]]$name2, ]
+
+trajCombined <- trajGSM1
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM1), 1, scale)) + t(apply(assay(trajMM1), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined, 
+                                     returnMat = TRUE, 
+                                     varCutOff = 0)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM1))
+rowOrder <- unique(rowOrder)
+
+ht1 <- plotTrajectoryHeatmap(trajGSM1,  
+                             pal = paletteContinuous(set = "horizonExtra"),  
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht2 <- plotTrajectoryHeatmap(trajMM1, 
+                             pal = paletteContinuous(set = "solarExtra"), 
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht1 + ht2
+```
+
+
+
+### save
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+### session Info
+```{r}
+sessionInfo()
+```
+

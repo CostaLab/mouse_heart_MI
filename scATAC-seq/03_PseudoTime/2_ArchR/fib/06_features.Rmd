@@ -1,0 +1,289 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T,cache=F)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(glue)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads =100)
+addArchRGenome("mm10")
+
+
+cols.celltypes <- c(
+    'Fibroblasts' = '#f032e6',
+    'Myofibroblasts' = '#911eb4',
+    'Pericytes/vSMC' = '#e6beff')
+
+
+getTopIdxLabel <- function(seTrajectory, labelTop=100){
+  maxFeatures <- 25000
+  varCutOff = 0.9
+
+  mat <- assay(seTrajectory)
+  rSNA <- rowSums(is.na(mat))
+  mat <- mat[rSNA == 0, ]
+  varQ <- ArchR:::.getQuantiles(matrixStats::rowVars(mat))
+  orderedVar <- FALSE
+  mat <- mat[order(varQ, decreasing = TRUE), ]
+  orderedVar <- TRUE
+  n <- min((1 - varCutOff) * nrow(mat), maxFeatures)
+  n <- min(n, nrow(mat))
+  mat <- mat[head(seq_len(nrow(mat)), n), ]
+  idxLabel <- rownames(mat)[seq_len(labelTop)]
+  idxLabel
+}
+```
+
+## Reading data
+```{r load_data}
+proj <- loadArchRProject(path = "./Fib", showLogo = FALSE)
+```
+
+
+## get trajectory 
+```{r plot_motif_heatmap, fig.height=12, fig.width=6}
+trajGSM1 <- getTrajectory(ArchRProj = proj,
+                         name = "palantir_Fibroblasts",
+                         useMatrix = "GeneScoreMatrix",
+                         log2Norm = TRUE)
+
+trajGSM2 <- getTrajectory(ArchRProj = proj,
+                         name = "palantir_Pericytes_vSMC",
+                         useMatrix = "GeneScoreMatrix",
+                         log2Norm = TRUE)
+
+trajMM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Fibroblasts", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+trajMM2 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Pericytes_vSMC", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+```
+
+
+## Fibroblasts feature plots
+```{r fig.height=50}
+gsm1 <- getTopIdxLabel(trajGSM1)
+
+
+
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = gsm1, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+d = "../save/Trajectory_Fibroblasts_Genescore/"
+dir.create(d)
+for (g in gsm1){
+  pdf(file.path(d, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+
+```
+
+
+```{r fig.height=50}
+gsm2 <- getTopIdxLabel(trajGSM2)
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = gsm2, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+d = "../save/Trajectory_Fibroblasts_Motif/"
+dir.create(d)
+for (g in gsm2){
+  pdf(file.path(d, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+```
+
+## Pericytes/vSMC feature plots
+```{r fig.height=50}
+mm1 <- getTopIdxLabel(trajMM1)
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = mm1, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+d = "../save/Trajectory_Pericytes.vSMC_Genescore/"
+dir.create(d)
+for (g in mm1){
+  pdf(file.path(d, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+```
+
+
+```{r fig.height=50}
+mm2 <- getTopIdxLabel(trajMM2)
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = mm2, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+d = "../save/Trajectory_Pericytes.vSMC_Motif/"
+dir.create(d)
+for (g in mm2){
+  pdf(file.path(d, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+```
+
+
+## Integrative pseudo-time analyses
+```{r integrative_1, fig.height=8, fig.width=8}
+corGSM_MM1 <- correlateTrajectories(trajGSM1, 
+                                    trajMM1,
+                                    corCutOff = 0.0,
+                                    varCutOff1 = 0.8,
+                                    varCutOff2 = 0.8)
+
+corGSM_MM1[[1]]
+corGSM_MM1[[1]] <- subset(corGSM_MM1[[1]], FDR < 0.05)
+
+trajGSM1 <- trajGSM1[corGSM_MM1[[1]]$name1, ]
+trajMM1 <- trajMM1[corGSM_MM1[[1]]$name2, ]
+
+d1 = "../save/Trajectory_Fib_integrated/Gene"
+d2 = "../save/Trajectory_Fib_integrated/Motif"
+dir.create(d1, recursive=T)
+dir.create(d2, recursive=T)
+
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = trajGSM1@NAMES, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+
+for (g in trajGSM1@NAMES){
+  pdf(file.path(d1, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = trajMM1@NAMES, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+for (g in trajMM1@NAMES){
+  pdf(file.path(d2, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+
+```
+
+
+## Integrative pseudo-time analyses
+```{r integrative_2, fig.height=8, fig.width=8}
+corGSM_MM2 <- correlateTrajectories(trajGSM2, 
+                                    trajMM2,
+                                    corCutOff = 0.0)
+
+corGSM_MM2[[1]]
+corGSM_MM2[[1]] <- subset(corGSM_MM2[[1]], FDR < 0.05)
+
+trajGSM2 <- trajGSM2[corGSM_MM2[[1]]$name1, ]
+trajMM2 <- trajMM2[corGSM_MM2[[1]]$name2, ]
+
+
+d1 = "../save/Trajectory_peri_integrated/Gene"
+d2 = "../save/Trajectory_peri_integrated/Motif"
+dir.create(d1, recursive=T)
+dir.create(d2, recursive=T)
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = trajGSM2@NAMES, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+
+
+for (g in trajGSM2@NAMES){
+  pdf(file.path(d1, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+
+ps <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "MotifMatrix", 
+    name = trajMM2@NAMES, 
+    embedding = "palantir",
+    baseSize = 20,
+    size = 1,
+    quantCut = c(0.01, 0.95)
+)
+
+for (g in trajMM2@NAMES){
+  pdf(file.path(d2, glue("{g}.pdf"))) 
+  print(ps[[g]])
+  dev.off()
+}
+
+```
+
+## Session information
+```{r}
+sessionInfo()
+```

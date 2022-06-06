@@ -1,0 +1,126 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+## Reading barcodes
+```{r}
+message("Reading in integrated data...")
+atac_ref <- readRDS("../../../Seurat3/IntegrationWithscOpen/obj.integrated_annotated_day3_myo.Rds")
+meta_data <- atac_ref@meta.data
+print(colnames(meta_data))
+
+macro_meta_data <- subset(meta_data, celltype %in% c("Macrophages", "Anti-inflammatory macrophages", "inflammatory macrophages"))
+
+
+```
+
+
+## Creating an ArchRProject
+```{r, fig.width=6, fig.height=6}
+
+ArrowFiles <- "./Macrophages.arrow"
+
+# With our Arrow files in hand, we are now ready to create an ArchRProject. An ArchRProject is associated with a set of Arrow files and is the backbone of nearly all ArchR analyses.
+proj <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "macro",
+  showLogo = FALSE,
+  copyArrows = TRUE #This is recommened so that you maintain an unaltered copy for later usage.
+)
+
+
+rownms_order <- stringr::str_replace(rownames(proj), "^Macrophages#", "")
+
+macro_meta_data <- macro_meta_data[rownms_order, ]
+
+library(dplyr)
+macro_meta_data <- macro_meta_data %>% 
+    mutate_if(is.factor, as.character)
+
+
+proj <- addCellColData(ArchRProj = proj,
+                       data = macro_meta_data[, 'celltype'],
+                       name = "celltype",
+                       cells = rownames(proj),
+                       force = TRUE)
+
+proj <- addCellColData(ArchRProj = proj,
+                       data = macro_meta_data[, 'time.ident'],
+                       name = "time.ident",
+                       cells = rownames(proj),
+                       force = TRUE)
+
+proj <- addCellColData(ArchRProj = proj,
+                       data = macro_meta_data[, 'gender.ident'],
+                       name = "gender.ident",
+                       cells = rownames(proj),
+                       force = TRUE)
+
+
+p1 <- plotGroups(ArchRProj = proj, 
+                 groupBy = "celltype", 
+                 colorBy = "cellColData", 
+                 name = "TSSEnrichment",
+                 alpha = 0.4,
+                 plotAs = "violin",
+                 addBoxPlot = TRUE)
+
+p2 <- plotGroups(ArchRProj = proj, 
+                 groupBy = "time.ident", 
+                 colorBy = "cellColData", 
+                 name = "log10(nFrags)",
+                 plotAs = "violin",
+                 alpha = 0.4,
+                 addBoxPlot = TRUE)
+
+p3 <- plotGroups(ArchRProj = proj, 
+                 groupBy = "gender.ident", 
+                 colorBy = "cellColData", 
+                 name = "log10(nFrags)",
+                 plotAs = "violin",
+                 alpha = 0.4,
+                 addBoxPlot = TRUE)
+
+print(p1)
+print(p2)
+print(p3)
+```
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+## Session information
+```{r}
+sessionInfo()
+```

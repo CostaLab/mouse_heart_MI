@@ -1,0 +1,282 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, message = F, echo = T,cache=F)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+library(glue)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads =100)
+addArchRGenome("mm10")
+
+
+cols.celltypes <- c(
+    'Fibroblasts' = '#f032e6',
+    'Myofibroblasts' = '#911eb4',
+    'Pericytes/vSMC' = '#e6beff')
+
+
+Add_A_Matrix <- function(
+    project = proj,
+    mtx = mtx,
+    vname = "z",
+    name = "AMatrix"
+){
+  ArrowFiles <- getArrowFiles(proj)
+  nms <- names(ArrowFiles)
+  for(nm in nms){
+    a_cellnm <- colnames(mtx)[grepl(nm, colnames(mtx))]
+    message(nm, " ", length(a_cellnm))
+    a_mtx <- mtx[, a_cellnm]
+    ArrowFile <- ArrowFiles[nm]
+    featureDF <-data.frame(seqnames = vname, 
+                           idx = seq_len(nrow(a_mtx)), 
+                           name = rownames(a_mtx),
+                           stringsAsFactors = FALSE)
+    
+    #Initialize
+   o <- ArchR:::.initializeMat(
+    ArrowFile = ArrowFile,
+    Group = name,
+    Class = "double",
+    Units =  vname,
+    cellNames = a_cellnm,
+    params = vname,
+    featureDF = featureDF,
+    force = TRUE)
+    
+   o <- ArchR:::.addMatToArrow(
+        mat = as(a_mtx,"dgCMatrix"), 
+        ArrowFile = ArrowFile, 
+        Group = paste0(name, "/", vname), 
+        binarize = FALSE,
+        addColSums = TRUE,
+        addRowSums = TRUE,
+        addRowVarsLog2 = TRUE)   
+    o <- h5write(obj = "Finished", file = ArrowFile, name = paste0(name,"/Info/Completed"))
+  }  
+  return(proj)
+}
+
+```
+
+
+
+## Reading data
+```{r load_data}
+proj <- loadArchRProject(path = "./Fib", showLogo = FALSE)
+proj <- addImputeWeights(proj)
+```
+
+
+## Get trajectory
+```{r}
+trajGSM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Fibroblasts", 
+                         useMatrix = "GeneScoreMatrix", 
+                         log2Norm = TRUE)
+
+trajMM1 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Fibroblasts", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+
+
+trajGSM2 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Pericytes_vSMC", 
+                         useMatrix = "GeneScoreMatrix", 
+                         log2Norm = TRUE)
+
+
+trajMM2 <- getTrajectory(ArchRProj = proj, 
+                         name = "palantir_Pericytes_vSMC", 
+                         useMatrix = "MotifMatrix", 
+                         log2Norm = FALSE,
+                         scaleTo = NULL)
+
+motif_mtx <- getMatrixFromProject(proj, "MotifMatrix")
+mtx <- assays(motif_mtx)[["z"]]
+proj <- Add_A_Matrix(proj, mtx, name="MotifZMatrix")
+```
+
+
+
+## Integrative pseudo-time analyses
+```{r integrative_1, fig.height=8, fig.width=8}
+corGSM_MM1 <- correlateTrajectories(trajGSM1, 
+                                    trajMM1,
+                                    corCutOff = 0.0,
+                                    varCutOff1 = 0.8,
+                                    varCutOff2 = 0.8)
+
+corGSM_MM1[[1]]
+corGSM_MM1[[1]] <- subset(corGSM_MM1[[1]], FDR < 0.05)
+
+trajGSM1 <- trajGSM1[corGSM_MM1[[1]]$name1, ]
+trajMM1 <- trajMM1[corGSM_MM1[[1]]$name2, ]
+
+trajCombined <- trajGSM1
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM1), 1, scale)) + t(apply(assay(trajMM1), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined, 
+                                     returnMat = TRUE, 
+                                     varCutOff = 0)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM1))
+rowOrder <- unique(rowOrder)
+
+ht1 <- plotTrajectoryHeatmap(trajGSM1,  
+                             pal = paletteContinuous(set = "horizonExtra"),  
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht2 <- plotTrajectoryHeatmap(trajMM1, 
+                             pal = paletteContinuous(set = "solarExtra"), 
+                             varCutOff = 0, 
+                             rowOrder = rowOrder)
+
+ht1 + ht2
+
+###fib
+motifs_pos <- rownames(trajMM1)
+motifs <- unique(elementMetadata(trajMM1[rowOrder])$name)
+
+pdf("../figure/fib/motif_fib_zscore_diffusion_map.pdf")
+for (mtf in motifs){
+    mtf_pos <- rownames(trajMM1)[which(grepl(mtf, rownames(trajMM1)))[1]]
+    p <- plotEmbedding(
+    ArchRProj = proj,
+    colorBy = "MotifZMatrix",
+    name = mtf_pos,
+    continuousSet = "horizonExtra",
+    embedding = "palantir",
+    size = 1,
+    quantCut = c(0.01, 0.95))
+    print(p)
+}
+dev.off()
+
+
+#pdf(file.path("../figure/fib", glue("corr_motif_fib_trajectory.pdf")))
+#for (mtf in motifs) {
+#    mtf_pos <- rownames(trajMM1)[which(grepl(mtf, rownames(trajMM1)))[1]]
+#    p1 <- plotTrajectory(proj,
+#                    trajectory = "palantir_Fibroblasts",
+#                    colorBy = "MotifZMatrix",
+#                    name = mtf_pos,
+#                    continuousSet = "blueYellow",
+#                    embedding = "palantir",
+#                    title = "palantir_Pericytes_vSMC")
+#
+#    ggAlignPlots(p1[[1]],
+#                 p1[[2]],
+#                type="h")
+#}
+#dev.off()
+
+
+```
+
+
+## Integrative pseudo-time analyses
+```{r integrative_2, fig.height=8, fig.width=8}
+corGSM_MM2 <- correlateTrajectories(trajGSM2, 
+                                    trajMM2,
+                                    corCutOff = 0.0)
+
+corGSM_MM2[[1]]
+corGSM_MM2[[1]] <- subset(corGSM_MM2[[1]], FDR < 0.05)
+
+trajGSM2 <- trajGSM2[corGSM_MM2[[1]]$name1, ]
+trajMM2 <- trajMM2[corGSM_MM2[[1]]$name2, ]
+
+trajCombined <- trajGSM2
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM2), 1, scale)) + t(apply(assay(trajMM2), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined, 
+                                     returnMat = TRUE, 
+                                     varCutOff = 0)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM2))
+rowOrder <- unique(rowOrder)
+
+ht1 <- plotTrajectoryHeatmap(trajGSM2,  
+                             pal = paletteContinuous(set = "horizonExtra"),  
+                             varCutOff = 0, rowOrder = rowOrder)
+
+ht2 <- plotTrajectoryHeatmap(trajMM2, 
+                             pal = paletteContinuous(set = "solarExtra"), 
+                             varCutOff = 0, rowOrder = rowOrder)
+
+ht1 + ht2
+
+motifs_pos <- rownames(trajMM2)
+motifs <- unique(elementMetadata(trajMM2[rowOrder])$name)
+#motifs <- unique(stringr::str_extract(rownames(trajMM2), regex("(?<=^z:)(.*?)(?=_.*?$)")))
+
+pdf("../figure/fib/motif_peri_zscore_diffusion_map.pdf")
+for (mtf in motifs){
+    mtf_pos <- rownames(trajMM2)[which(grepl(mtf, rownames(trajMM2)))[1]]
+    p <- plotEmbedding(
+    ArchRProj = proj,
+    colorBy = "MotifZMatrix",
+    name = mtf_pos,
+    continuousSet = "horizonExtra",
+    embedding = "palantir",
+    size = 1,
+    quantCut = c(0.01, 0.95))
+    print(p)
+}
+dev.off()
+
+#pdf(file.path("../figure/fib", glue("corr_motif_peri_trajectory.pdf")))
+#for (mtf in motifs) {
+#    mtf_pos <- rownames(trajMM2)[which(grepl(mtf, rownames(trajMM2)))[1]]
+#    p1 <- plotTrajectory(proj,
+#                    trajectory = "palantir_Pericytes_vSMC",
+#                    colorBy = "MotifZMatrix",
+#                    name = mtf_pos,
+#                    continuousSet = "blueYellow",
+#                    embedding = "palantir",
+#                    title = "palantir_Pericytes_vSMC")
+#
+#    ggAlignPlots(p1[[1]],
+#                 p1[[2]],
+#                type="h")
+#}
+#dev.off()
+
+```
+
+
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

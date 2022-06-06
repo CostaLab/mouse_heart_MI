@@ -1,0 +1,182 @@
+---
+title: "Analyze data using ArchR"
+author: "Mingbo Cheng"
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(WriteXLS)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(cluster)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+library(GenomicRanges)
+library(GenomeInfoDb)
+library(data.table)
+library(ArchR)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+
+#c("Macrophages", "Anti-inflammatory macrophages", "inflammatory macrophages")
+
+cols.celltypes <- c(
+    'Macrophages' = '#f032e6',
+    'Anti-inflammatory macrophages' = '#911eb4',
+    'inflammatory macrophages' = '#e6beff')
+```
+
+## Reading data
+```{r}
+proj <- loadArchRProject(path = "./macro", showLogo = FALSE)
+#proj <- addImputeWeights(proj,
+#                         reducedDims = "IterativeLSI")
+#
+```
+
+## Iterative Latent Semantic Indexing (LSI)
+```{r}
+proj <- addIterativeLSI(
+    ArchRProj = proj,
+    varFeatures = 25000,
+    sampleCellsFinal = NULL,
+    saveIterations = FALSE,
+    force = TRUE
+)
+###############ADD################
+proj <- addImputeWeights(proj,
+                         reducedDims = "IterativeLSI")
+
+###############ADD################
+proj <- addHarmony(
+    ArchRProj = proj,
+    reducedDims = "IterativeLSI",
+    name = "Harmony",
+    groupBy = "time.ident"
+)
+
+```
+
+## Clustering and Visualizing using IterativeLSI 
+```{r, fig.height=6, fig.width=18}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "IterativeLSI",
+    method = "Seurat",
+    name = "Clusters",
+    resolution = 0.8,
+    force = TRUE
+)
+
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "IterativeLSI", 
+    name = "UMAP", 
+    nNeighbors = 30, 
+    metric = "cosine",
+    force = TRUE
+)
+
+p1 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "celltype", embedding = "UMAP")
+
+p2 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "time.ident", embedding = "UMAP")
+
+p3 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "Clusters", embedding = "UMAP")
+
+ggAlignPlots(p1, p2, p3, type = "h")
+```
+
+
+## Clustering and Visualizing using Harmony 
+```{r, fig.height=6, fig.width=18}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "Harmony",
+    method = "Seurat",
+    name = "Clusters_Harmony",
+    resolution = 0.8,
+    force = TRUE
+)
+
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "Harmony", 
+    name = "UMAP_Harmony", 
+    nNeighbors = 30, 
+    metric = "cosine",
+    force = TRUE
+)
+
+p1 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "celltype", 
+                    embedding = "UMAP_Harmony")
+
+p2 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "time.ident", 
+                    embedding = "UMAP_Harmony")
+
+p3 <- plotEmbedding(ArchRProj = proj, 
+                    colorBy = "cellColData", 
+                    name = "Clusters_Harmony", 
+                    embedding = "UMAP_Harmony")
+
+ggAlignPlots(p1, p2, p3, type = "h")
+```
+
+
+### violin plots
+
+```{r}
+macro_genes <- macro_genes <- c("Ms4a6c", "Gngt2", "Lgals3", "Adgre1", "F13a1", "Il1rl1", "Gata3", "Folr2", "Mrc1", "Cbr2", "Pf4", "C1qa", "Cd14", "Cebpa")
+
+for (gene in macro_genes){
+    p <- plotGroups(ArchRProj = proj,
+                 groupBy = "Clusters_Harmony",
+                 #colorBy = "CellColData",
+                 colorBy = "GeneScoreMatrix",
+                 name = gene,
+                 alpha = 0.4,
+                 plotAs = "violin",
+                 legendSize=30)  +
+                 ggtitle(gene) +
+                 theme(axis.text.x = element_text(size=40),
+                       axis.text.y = element_text(size=40)) +
+                 theme(plot.title = element_text(size = 40, face = "bold"))
+    print(p)
+}
+
+```
+
+
+
+
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+## Session information
+```{r}
+sessionInfo()
+```
