@@ -1,0 +1,69 @@
+```{r}
+# 4 and 11 are vSMC, 1,3,6,7 are pericytes, 5 Myofibroblasts, 0,2,9 fibroblasts, 10 looks like immune cells and 8 like endothelial cells 3:03
+library(Seurat)
+library(ggplot2)
+library(ggsci)
+
+cluster_annotation <- c(
+ "0"= "Fibroblasts",
+ "1"= "Pericytes",
+ "2"= "Fibroblasts",
+ "3"= "Pericytes",
+ "4"= "vSMC",
+ "5"= "Myofibroblasts",
+ "6"= "Pericytes",
+ "7"= "Pericytes",
+ "8"= "Endothelial",
+ "9"= "Fibroblasts",
+ "10" = "immune cells",
+ "11" = "vSMC"
+)
+
+
+```
+
+```{r}
+atac <- readRDS(file="./save_res/trans_add_tdtomato.Rds")
+```
+
+```{r}
+atac$seurat_clusters <- atac$integrated_snn_res.1
+from_cluster_slot = "seurat_clusters"
+annotation <- plyr::mapvalues(atac@meta.data[, from_cluster_slot],
+                                           names(cluster_annotation),
+                                           cluster_annotation)
+atac$annotation <- annotation
+saveRDS(atac, file="save_res/trans_add_tdtomato_annotation_res1.0.Rds")
+```
+
+
+```{r}
+DimPlot(atac, group.by="annotation", cols=ggsci::pal_simpsons()(10))
+```
+
+
+```{r}
+Idents(atac) <- "annotation"
+peri_myo <- subset(atac, idents = c("Pericytes", "Myofibroblasts"))
+## Seurat4
+library(destiny)
+
+dm <- DiffusionMap(peri_myo[["pca_integrated"]]@cell.embeddings,
+                   verbose = TRUE)
+embedding <- as.data.frame(dm)[, c("DC1", "DC2")]
+
+colnames(embedding) <- c("DC_Dimension_1",
+                         "DC_Dimension_2")
+
+peri_myo[["dm"]] <- CreateDimReducObject(as.matrix(embedding), assay = "peaks")
+
+DimPlot(peri_myo, group.by="annotation", reduction="dm")
+
+
+embedding <- embed(as.matrix(peri_myo[["umap_pca_integrated"]]@cell.embeddings, "Isomap"))
+rownames(embedding) <- colnames(peri_myo)
+colnames(embedding) <- c("isomap_Dimension_1",
+                         "isomap_Dimension_2")
+peri_myo[["isomap"]] <- CreateDimReducObject(as.matrix(embedding), assay = "peaks")
+DimPlot(peri_myo, group.by="annotation", reduction="isomap")
+```
